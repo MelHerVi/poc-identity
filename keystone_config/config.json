@@ -1,0 +1,17 @@
+{
+    "command": "/usr/local/bin/start_keystone.sh",
+    "config_files": [
+        {
+            "source": "/var/lib/kolla/config_files/keystone.conf",
+            "dest": "/etc/keystone/keystone.conf",
+            "owner": "keystone",
+            "perm": "0600"
+        },
+        {
+            "source": "/var/lib/kolla/config_files/start_keystone.sh",
+            "dest": "/usr/local/bin/start_keystone.sh",
+            "owner": "keystone",
+            "perm": "0755"
+        }
+    ]
+}

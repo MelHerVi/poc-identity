@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POC Identity Bridge - Keystone to Keycloak</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a0e1a; color: #e0e0e0; line-height: 1.6; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
+        h1 { font-size: 2.2em; background: linear-gradient(135deg, #00d2ff, #3a7bd5); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px; }
+        h2 { color: #00d2ff; border-bottom: 2px solid #1a2540; padding-bottom: 8px; margin: 30px 0 15px; }
+        h3 { color: #7ec8e3; margin: 20px 0 10px; }
+        .badge { display: inline-block; background: linear-gradient(135deg, #00c853, #00e676); color: #0a0e1a; padding: 4px 12px; border-radius: 12px; font-size: 0.85em; font-weight: bold; margin-left: 10px; }
+        .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 24px; margin: 16px 0; }
+        .card.success { border-color: #00c853; }
+        .card.warning { border-color: #ff9800; }
+        .flow-diagram { background: #0d1117; border-radius: 8px; padding: 20px; font-family: 'Courier New', monospace; font-size: 0.9em; color: #58a6ff; overflow-x: auto; }
+        pre { background: #0d1117; border-radius: 8px; padding: 16px; overflow-x: auto; font-size: 0.85em; color: #79c0ff; }
+        code { background: #1a2332; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; color: #ff7b72; }
+        .step { display: flex; align-items: flex-start; gap: 16px; margin: 16px 0; }
+        .step-num { background: linear-gradient(135deg, #3a7bd5, #00d2ff); color: white; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
+        table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+        th { background: #1a2540; color: #00d2ff; padding: 12px; text-align: left; }
+        td { padding: 12px; border-bottom: 1px solid #1f2937; }
+        .challenge { background: #1a1520; border-left: 4px solid #ff9800; padding: 16px; margin: 12px 0; border-radius: 0 8px 8px 0; }
+        .solution { background: #0a1a10; border-left: 4px solid #00c853; padding: 16px; margin: 12px 0; border-radius: 0 8px 8px 0; }
+        .result-box { background: #0d1117; border: 2px solid #00c853; border-radius: 12px; padding: 24px; margin: 20px 0; }
+        .result-box pre { margin: 10px 0 0; background: none; padding: 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>POC: Identity Bridge</h1>
+        <p style="font-size: 1.2em; color: #8b95a5; margin-bottom: 5px;">Keystone Token Exchange &rarr; Keycloak JWT</p>
+        <span class="badge">COMPLETADO</span>
+
+        <h2>Resumen Ejecutivo</h2>
+        <div class="card success">
+            <p>Se ha implementado exitosamente un flujo de <strong>federaci&oacute;n de identidad real</strong> entre OpenStack Keystone y Keycloak 26, donde un token Fernet de Keystone se intercambia por un JWT firmado por Keycloak usando el est&aacute;ndar <strong>RFC 8693 (OAuth 2.0 Token Exchange)</strong>.</p>
+            <p style="margin-top: 12px;">El flujo es 100% real: el token se valida contra la API de OpenStack, no es una simulaci&oacute;n.</p>
+        </div>
+
+        <h2>Arquitectura del Sistema</h2>
+        <div class="flow-diagram">
+            <pre style="background:none; color:#58a6ff;">
+  OpenStack Keystone          Identity Bridge           Keycloak 26
+  (Token Fernet)           (keystone_adapter.py)       (JWT firmado)
+       |                         |                        |
+       | 1. Login (user/pass)    |                        |
+       |&lt;--- Token Fernet        |                        |
+       |                         |                        |
+       |                         | 2. Token Exchange      |
+       |                         | (RFC 8693)             |
+       |                         |                        |
+       |  3. /introspect -------&gt;|                        |
+       |     (POST token)        |                        |
+       |                         |--&gt; GET /v3/auth/tokens  |
+       |  4. /userinfo ---------&gt;|     (X-Subject-Token)   |
+       |     (Bearer token)      |                        |
+       |                         |&lt;-- Validaci&oacute;n real      |
+       |                         |                        |
+       |                         | 5. JWT firmado (RS256) &gt;|
+            </pre>
+        </div>
+
+        <h3>Componentes</h3>
+        <table>
+            <tr><th>Componente</th><th>Tecnolog&iacute;a</th><th>Funci&oacute;n</th></tr>
+            <tr><td><code>Keystone</code></td><td>OpenStack Identity</td><td>Emite tokens Fernet, fuente de identidad</td></tr>
+            <tr><td><code>Keystone Adapter</code></td><td>Python/Flask</td><td>Traduce tokens Keystone a formato OIDC (RFC 7662)</td></tr>
+            <tr><td><code>Keycloak</code></td><td>v26.5 (Quarkus)</td><td>Identity Broker, emite JWT firmados con RSA-256</td></tr>
+        </table>
+
+        <h3>Por qu&eacute; se necesita el Adapter</h3>
+        <div class="card">
+            <p>Keystone y Keycloak <strong>&ldquo;hablan idiomas diferentes&rdquo;</strong>. Keycloak solo entiende protocolos est&aacute;ndar (OIDC, OAuth 2.0), pero Keystone usa una API propietaria de OpenStack:</p>
+            <table>
+                <tr><th></th><th>Keystone (OpenStack)</th><th>Keycloak (OIDC)</th></tr>
+                <tr><td><strong>Formato del token</strong></td><td>Fernet (binario, opaco)</td><td>JWT (JSON, autocontenido)</td></tr>
+                <tr><td><strong>C&oacute;mo se valida</strong></td><td><code>GET /v3/auth/tokens</code> con header <code>X-Subject-Token</code></td><td>Verificando la firma RSA del JWT</td></tr>
+                <tr><td><strong>Est&aacute;ndar</strong></td><td>API propietaria de OpenStack</td><td>OAuth 2.0 / OpenID Connect</td></tr>
+            </table>
+            <p style="margin-top: 16px;">Cuando Keycloak recibe un token externo para hacer token exchange, necesita verificar que es v&aacute;lido. Pero no sabe &ldquo;hablar OpenStack&rdquo;, as&iacute; que consulta dos endpoints est&aacute;ndar:</p>
+            <div class="step"><div class="step-num">1</div><div><strong>Introspection</strong> (RFC 7662): &ldquo;&iquest;Este token es v&aacute;lido?&rdquo; &rarr; <code>POST /introspect</code></div></div>
+            <div class="step"><div class="step-num">2</div><div><strong>UserInfo</strong> (OIDC Core): &ldquo;&iquest;Qui&eacute;n es el usuario?&rdquo; &rarr; <code>GET /userinfo</code></div></div>
+        </div>
+
+        <h3>Traducci&oacute;n de protocolos</h3>
+        <div class="flow-diagram">
+            <pre style="background:none; color:#58a6ff;">
+Keycloak (OIDC)                Adapter                    Keystone (OpenStack)
+──────────────               ──────────                 ────────────────────
+
+POST /introspect    ──&gt;     GET /v3/auth/tokens
+  token=gAAAAA...            X-Subject-Token: gAAAAA...
+                   &lt;──
+  { active: true,           { token: { user: {
+    username: "poc",            name: "poc",
+    sub: "f182..." }            id: "f182..." } } }
+
+
+GET /userinfo       ──&gt;     GET /v3/auth/tokens
+  Bearer: gAAAAA...          X-Subject-Token: gAAAAA...
+                   &lt;──
+  { sub: "f182...",          { token: { user: {
+    name: "poc-user",           name: "poc-user",
+    email: "..." }              domain: "Default" } } }
+            </pre>
+        </div>
+
+        <div class="card" style="border-color: #3a7bd5;">
+            <p><strong>Nota:</strong> Si Keystone fuera un proveedor OIDC nativo (como Azure AD, Google u Okta), no se necesitar&iacute;a el adapter &mdash; Keycloak conectar&iacute;a directamente.</p>
+        </div>
+
+        <h3>Est&aacute;ndares utilizados</h3>
+        <table>
+            <tr><th>Est&aacute;ndar</th><th>RFC / Spec</th><th>Uso en esta POC</th></tr>
+            <tr><td><strong>Token Introspection</strong></td><td>RFC 7662</td><td>Adapter expone <code>/introspect</code> para validar tokens</td></tr>
+            <tr><td><strong>UserInfo</strong></td><td>OpenID Connect Core</td><td>Adapter expone <code>/userinfo</code> para datos del usuario</td></tr>
+            <tr><td><strong>Token Exchange</strong></td><td>RFC 8693</td><td>Keycloak intercambia token Keystone por JWT</td></tr>
+            <tr><td><strong>JWT</strong></td><td>RFC 7519</td><td>Formato del token final que emite Keycloak</td></tr>
+        </table>
+
+        <h2>Desaf&iacute;os T&eacute;cnicos Superados</h2>
+
+        <div class="challenge">
+            <h3>1. UI de Keycloak 26 incompleta</h3>
+            <p>La interfaz web de Keycloak 26 no muestra las opciones de "Permissions" para Identity Providers, impidiendo configurar el token exchange desde la UI.</p>
+        </div>
+        <div class="solution">
+            <strong>Soluci&oacute;n:</strong> Configuraci&oacute;n 100% v&iacute;a REST API del Admin, bypaseando completamente la UI.
+        </div>
+
+        <div class="challenge">
+            <h3>2. FGAP v2 incompatible con Token Exchange de IdP</h3>
+            <p>La versi&oacute;n v2 de Fine-Grained Admin Permissions (por defecto en Keycloak 26) no soporta permisos de Identity Provider para token exchange.</p>
+        </div>
+        <div class="solution">
+            <strong>Soluci&oacute;n:</strong> Forzar <code>admin-fine-grained-authz:v1</code> en el arranque de Keycloak.
+        </div>
+
+        <div class="challenge">
+            <h3>3. Pol&iacute;ticas de tipo "client" no funcionan para Token Exchange</h3>
+            <p>Las pol&iacute;ticas de tipo "client" eval&uacute;an como DENY porque Keycloak eval&uacute;a el cliente interno, no el solicitante.</p>
+        </div>
+        <div class="solution">
+            <strong>Soluci&oacute;n:</strong> Usar pol&iacute;tica de tipo "role" con el rol por defecto del realm, que eval&uacute;a correctamente para service accounts.
+        </div>
+
+        <div class="challenge">
+            <h3>4. Permisos en DOS niveles: IdP + Cliente</h3>
+            <p>Token Exchange requiere permisos en el Identity Provider Y en el cliente que solicita el intercambio. Sin uno de los dos, el error es "Client not allowed to exchange".</p>
+        </div>
+        <div class="solution">
+            <strong>Soluci&oacute;n:</strong> Crear permiso <code>token-exchange</code> tanto en el IdP como en el cliente, vinculados a la misma pol&iacute;tica.
+        </div>
+
+        <div class="challenge">
+            <h3>5. "User already exists" durante el intercambio</h3>
+            <p>Keycloak intenta crear un nuevo usuario federado, pero ya existe un usuario local con el mismo nombre.</p>
+        </div>
+        <div class="solution">
+            <strong>Soluci&oacute;n:</strong> Crear un <strong>Federated Identity Link</strong> entre el usuario local y el IdP antes del intercambio, usando el ID de usuario de Keystone.
+        </div>
+
+        <h2>Configuraci&oacute;n Clave de Keycloak</h2>
+        <div class="card">
+            <h3>Features Habilitadas</h3>
+            <pre>start-dev --features=token-exchange,admin-fine-grained-authz:v1</pre>
+            
+            <h3 style="margin-top:20px">Identity Provider (keystone-idp)</h3>
+            <pre>Tipo: OpenID Connect v1.0
+Discovery: http://keystone-adapter:8000/.well-known/openid-configuration
+Introspection: http://keystone-adapter:8000/introspect
+UserInfo: http://keystone-adapter:8000/userinfo
+tokenExchangeSupported: true
+validateSignature: false</pre>
+
+            <h3 style="margin-top:20px">Client (orchestrator-client)</h3>
+            <pre>Tipo: Confidential
+Service Account: Enabled
+standard.token.exchange.enabled: true
+Permissions: Enabled (fine-grained)</pre>
+        </div>
+
+        <h2>Resultado Final</h2>
+        <div class="result-box">
+            <p style="color:#00c853; font-size:1.1em; font-weight:bold;">&#10004; Intercambio de Token Exitoso</p>
+            <pre>
+[STEP 1] Autenticando en OpenStack Keystone...
+  OK - Token Keystone: gAAAAABpmdcLAKi3xmW3...
+
+[STEP 2] Token Exchange (RFC 8693) a Keycloak...
+  OK - JWT firmado recibido
+
+[STEP 3] Claims del JWT:
+  Usuario:  poc-user
+  Emisor:   http://localhost:8080/realms/cloud-orch
+  Scopes:   profile email
+  Tipo:     Bearer (RS256)
+            </pre>
+        </div>
+
+        <h2>Caso de Uso: Un JWT para Todos los Servicios</h2>
+        <div class="card success">
+            <p>El principal valor de esta arquitectura es que el <strong>orquestador cloud solo necesita gestionar 2 tokens</strong>, independientemente del n&uacute;mero de servicios integrados.</p>
+        </div>
+
+        <div class="flow-diagram">
+            <pre style="background:none; color:#58a6ff;">
+  Orquestador Cloud
+       |
+       | Login en Keystone (una sola vez)
+       |
+       +--&gt; Token Keystone (Fernet) --&gt; Operaciones OpenStack
+       |                                (VMs, redes, storage...)
+       |
+       +--&gt; Token Exchange --&gt; JWT Keycloak --&gt; TODOS los servicios
+                                                |
+                                    +-----------+-----------+
+                                    |           |           |
+                                 Commvault    Veeam    Otros servicios
+            </pre>
+        </div>
+
+        <table>
+            <tr><th>Token</th><th>Uso</th><th>Gesti&oacute;n</th></tr>
+            <tr><td><strong>Keystone Fernet</strong></td><td>Operaciones OpenStack</td><td>Lo emite Keystone al hacer login</td></tr>
+            <tr><td><strong>Keycloak JWT</strong></td><td>Todos los dem&aacute;s servicios</td><td>Se obtiene UNA vez v&iacute;a token exchange</td></tr>
+        </table>
+
+        <h3>Validaci&oacute;n Independiente por Servicio</h3>
+        <div class="card">
+            <p>El JWT de Keycloak es <strong>autocontenido</strong> &mdash; cada servicio lo valida por s&iacute; solo, sin contactar a Keycloak en tiempo real:</p>
+            <div class="step"><div class="step-num">1</div><div>Descargar la clave p&uacute;blica de Keycloak (endpoint JWKS, se cachea)</div></div>
+            <div class="step"><div class="step-num">2</div><div>Verificar la firma RSA-256 del JWT</div></div>
+            <div class="step"><div class="step-num">3</div><div>Comprobar que no ha expirado (<code>exp</code>)</div></div>
+            <div class="step"><div class="step-num">4</div><div>Verificar que el emisor (<code>iss</code>) es el Keycloak de confianza</div></div>
+        </div>
+
+        <div class="card">
+            <h3>Beneficios Clave</h3>
+            <div class="step"><div class="step-num" style="background: linear-gradient(135deg, #00c853, #00e676);">&#10004;</div><div><strong>Sin cuello de botella</strong> &mdash; Keycloak no participa en la validaci&oacute;n en tiempo real</div></div>
+            <div class="step"><div class="step-num" style="background: linear-gradient(135deg, #00c853, #00e676);">&#10004;</div><div><strong>Sin latencia adicional</strong> &mdash; la validaci&oacute;n es local y criptogr&aacute;fica</div></div>
+            <div class="step"><div class="step-num" style="background: linear-gradient(135deg, #00c853, #00e676);">&#10004;</div><div><strong>Un solo token</strong> sirve para Commvault, Veeam, y cualquier servicio que conf&iacute;e en Keycloak</div></div>
+            <div class="step"><div class="step-num" style="background: linear-gradient(135deg, #00c853, #00e676);">&#10004;</div><div><strong>Revocaci&oacute;n centralizada</strong> &mdash; se revoca la sesi&oacute;n en Keycloak y el token expira naturalmente</div></div>
+        </div>
+
+        <h2>Instalaci&oacute;n R&aacute;pida (3 comandos)</h2>
+        <div class="card">
+            <h3>Prerequisitos</h3>
+            <p>Docker, Docker Compose, Python 3.x con <code>requests</code> (<code>pip install requests</code>)</p>
+
+            <h3 style="margin-top:20px">Pasos</h3>
+            <pre style="color: #00e676;">
+# 1. Levantar los servicios (Keystone, Keycloak, Adapter)
+docker-compose up -d
+
+# 2. Esperar ~30s y ejecutar el setup automatico (una sola vez)
+python setup.py
+
+# 3. Ejecutar la demo del flujo completo
+python demo.py</pre>
+        </div>
+
+        <h3>Que hace <code>setup.py</code></h3>
+        <table>
+            <tr><th>Paso</th><th>Componente</th><th>Acci&oacute;n</th><th>API utilizada</th></tr>
+            <tr><td>1/8</td><td>Keycloak</td><td>Crear realm <code>cloud-orch</code></td><td><code>POST /admin/realms</code></td></tr>
+            <tr><td>2/8</td><td>Keycloak</td><td>Crear client <code>orchestrator-client</code></td><td><code>POST /admin/realms/{realm}/clients</code></td></tr>
+            <tr><td>3/8</td><td>Keycloak</td><td>Crear IdP <code>keystone-idp</code></td><td><code>POST .../identity-provider/instances</code></td></tr>
+            <tr><td>4/8</td><td>Keycloak</td><td>Crear usuario <code>poc-user</code></td><td><code>POST /admin/realms/{realm}/users</code></td></tr>
+            <tr><td>5/8</td><td>Keystone</td><td>Crear proyecto y usuario</td><td><code>POST /v3/projects</code>, <code>POST /v3/users</code></td></tr>
+            <tr><td>6/8</td><td>Keycloak</td><td>Habilitar permisos fine-grained</td><td><code>PUT .../management/permissions</code></td></tr>
+            <tr><td>7/8</td><td>Keycloak</td><td>Crear pol&iacute;tica de role + vincular</td><td><code>POST .../authz/.../policy/role</code></td></tr>
+            <tr><td>8/8</td><td>Keycloak</td><td>Vincular usuario al IdP</td><td><code>POST .../federated-identity/keystone-idp</code></td></tr>
+        </table>
+
+        <h3>Comandos &Uacute;tiles</h3>
+        <div class="card">
+            <pre style="color: #79c0ff;">
+# Ver logs de cada servicio
+docker logs poc-identity-keycloak-1 --tail 20
+docker logs poc-identity-keystone-adapter-1 --tail 20
+docker logs poc-identity-keystone-1 --tail 20
+
+# Reiniciar un servicio
+docker-compose restart keycloak
+
+# Parar todo
+docker-compose down
+
+# Parar y borrar datos (empezar de cero)
+docker-compose down -v</pre>
+        </div>
+
+        <div class="card warning">
+            <div class="step"><div class="step-num">1</div><div>Habilitar HTTPS en todos los servicios (Keystone, Adapter, Keycloak)</div></div>
+            <div class="step"><div class="step-num">2</div><div>Usar secretos gestionados (Vault, AWS Secrets Manager) en lugar de variables de entorno</div></div>
+            <div class="step"><div class="step-num">3</div><div>Configurar base de datos externa para Keycloak (PostgreSQL) en lugar de H2</div></div>
+            <div class="step"><div class="step-num">4</div><div>Implementar rate limiting en el Adapter para proteger contra abusos</div></div>
+            <div class="step"><div class="step-num">5</div><div>Monitorizar la expiraci&oacute;n de tokens y rotaci&oacute;n de claves RSA</div></div>
+            <div class="step"><div class="step-num">6</div><div>Automatizar la configuraci&oacute;n via Terraform o scripts de inicializaci&oacute;n</div></div>
+        </div>
+
+        <h2>Configuraci&oacute;n Avanzada</h2>
+        <div class="card" style="border-left: 5px solid #00c853;">
+            <h3>1. Mapeo de Roles (Commvault/Veeam)</h3>
+            <p>Para integraci&oacute;n nativa, Keycloak puede inyectar roles basados en OpenStack:</p>
+            <ul>
+                <li><strong>Mappers:</strong> Transforman Proyectos/Roles de Keystone en claims del JWT.</li>
+                <li><strong>Resultado:</strong> El JWT incluir&iacute;a <code>"roles": ["BackupAdmin"]</code>, eliminando configuraci&oacute;n manual en Commvault.</li>
+            </ul>
+
+            <h3 style="margin-top:20px">2. Ciclo de Vida y Revocaci&oacute;n</h3>
+            <p>A diferencia de los JWT est&aacute;ndar, este flujo es m&aacute;s seguro:</p>
+            <ul>
+                <li><strong>Validaci&oacute;n Real:</strong> El Adapter consulta Keystone en cada exchange/introspección.</li>
+                <li><strong>Revocaci&oacute;n:</strong> Si el token de Keystone se borra, el acceso en Keycloak cae inmediatamente.</li>
+            </ul>
+
+            <h3 style="margin-top:20px">3. Provisionamiento Just-in-Time (JIT)</h3>
+            <p>Los usuarios no necesitan ser creados previamente en Keycloak; se importan autom&aacute;ticamente la primera vez que se autentican con su token de Keystone.</p>
+        </div>
+
+        <h3>Archivos del Proyecto</h3>
+        <div class="card" style="background: #1a202c;">
+            <pre style="color: #cbd5e0; margin: 0;">
+poc-identity/
+├── docker-compose.yml   # Orquestaci&oacute;n de contenedores
+├── setup.py             # Configuraci&oacute;n autom&aacute;tica
+├── demo.py              # Prueba de concepto completa
+├── README_POC.md        # Gu&iacute;a t&eacute;cnica
+├── README_POC.html      # Reporte visual (este archivo)
+└── app/
+    └── keystone_adapter.py # Traductor de protocolos</pre>
+        </div>
+
+        <p style="text-align: center; color: #4a5568; margin-top: 40px; font-size: 0.9em;">
+            POC Identity Bridge &bull; Keycloak 26.5 &bull; OpenStack Keystone &bull; 2026
+        </p>
+    </div>
+</body>
+</html>

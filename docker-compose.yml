@@ -1,0 +1,54 @@
+services:
+  # Database for Keystone
+  db:
+    image: mariadb:10.5
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+    networks:
+      - identity-net
+
+  # OpenStack Keystone (Identity Provider)
+  keystone:
+    image: quay.io/openstack.kolla/ubuntu-binary-keystone:wallaby
+    volumes:
+      - ./keystone_config/:/var/lib/kolla/config_files/:ro
+    environment:
+      KOLLA_CONFIG_STRATEGY: COPY_ALWAYS
+    depends_on:
+      - db
+    ports:
+      - "5000:5000"
+    networks:
+      - identity-net
+
+  # Keycloak (Identity Broker)
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    command: start-dev --features=token-exchange,admin-fine-grained-authz:v1
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak_data:/opt/keycloak/data
+    ports:
+      - "8080:8080"
+    networks:
+      - identity-net
+
+  # Keystone Adapter (Bridge between Keystone and Keycloak)
+  keystone-adapter:
+    image: python:3.9-slim
+    volumes:
+      - ./app:/app
+    working_dir: /app
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "pip install flask requests && python keystone_adapter.py"
+    networks:
+      - identity-net
+    depends_on:
+      - keystone
+
+networks:
+  identity-net:
