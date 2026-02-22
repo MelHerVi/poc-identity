@@ -113,6 +113,7 @@ def step2_create_client(headers):
         print("  Ya existe, actualizando...")
         client = existing[0]
         client["attributes"]["standard.token.exchange.enabled"] = "true"
+        client["attributes"]["access.token.lifespan"] = "3600"
         requests.put(
             f"{KEYCLOAK_URL}/admin/realms/{REALM}/clients/{client['id']}",
             headers=headers,
@@ -128,7 +129,10 @@ def step2_create_client(headers):
         "serviceAccountsEnabled": True,
         "directAccessGrantsEnabled": True,
         "standardFlowEnabled": True,
-        "attributes": {"standard.token.exchange.enabled": "true"},
+        "attributes": {
+            "standard.token.exchange.enabled": "true",
+            "access.token.lifespan": "3600",
+        },
     }
     r = requests.post(
         f"{KEYCLOAK_URL}/admin/realms/{REALM}/clients",
