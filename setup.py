@@ -573,6 +573,102 @@ def step8_link_user(headers):
         print(f"  Error: {r.status_code} {r.text[:200]}")
 
 
+def step9_create_mappers(headers):
+    """Crea mappers para inyectar datos de Keystone en el JWT."""
+    print("\n[9/9] Creando mappers de claims...")
+
+    # --- 1. IdP Mappers: importar claims del userinfo
+    #         como atributos del usuario en Keycloak ---
+    idp_claims = [
+        ("keystone_user_id", "keystone_user_id"),
+        ("keystone_project_id", "keystone_project_id"),
+        ("keystone_project_name", "keystone_project_name"),
+        ("keystone_roles", "keystone_roles"),
+    ]
+
+    idp_url = (
+        f"{KEYCLOAK_URL}/admin/realms/{REALM}"
+        f"/identity-provider/instances/{IDP_ALIAS}/mappers"
+    )
+
+    # Obtener mappers existentes
+    existing = requests.get(idp_url, headers=headers).json()
+    existing_names = [m.get("name") for m in existing]
+
+    for claim, attr in idp_claims:
+        name = f"ks-{claim}"
+        if name in existing_names:
+            print(f"  Mapper IdP '{name}' ya existe")
+            continue
+        mapper = {
+            "name": name,
+            "identityProviderAlias": IDP_ALIAS,
+            "identityProviderMapper": ("oidc-user-attribute-idp-mapper"),
+            "config": {
+                "syncMode": "INHERIT",
+                "claim": claim,
+                "user.attribute": attr,
+            },
+        }
+        r = requests.post(idp_url, headers=headers, json=mapper)
+        if r.status_code == 201:
+            print(f"  OK - Mapper IdP '{name}' creado")
+        else:
+            print(f"  WARN - Mapper IdP '{name}': {r.status_code}")
+
+    # --- 2. Client Protocol Mappers: inyectar atributos
+    #         del usuario en el JWT ---
+    # Buscar el client ID interno
+    clients = requests.get(
+        f"{KEYCLOAK_URL}/admin/realms/{REALM}" f"/clients?clientId={CLIENT_ID}",
+        headers=headers,
+    ).json()
+    if not clients:
+        print("  Error: Cliente no encontrado")
+        return
+    client_uuid = clients[0]["id"]
+
+    client_url = (
+        f"{KEYCLOAK_URL}/admin/realms/{REALM}"
+        f"/clients/{client_uuid}/protocol-mappers/models"
+    )
+
+    # Obtener mappers existentes del cliente
+    existing_client = requests.get(client_url, headers=headers).json()
+    existing_client_names = [m.get("name") for m in existing_client]
+
+    jwt_claims = [
+        ("keystone_user_id", "String"),
+        ("keystone_project_id", "String"),
+        ("keystone_project_name", "String"),
+        ("keystone_roles", "String"),
+    ]
+
+    for attr, json_type in jwt_claims:
+        name = f"ks-{attr}"
+        if name in existing_client_names:
+            print(f"  Mapper JWT '{name}' ya existe")
+            continue
+        mapper = {
+            "name": name,
+            "protocol": "openid-connect",
+            "protocolMapper": ("oidc-usermodel-attribute-mapper"),
+            "config": {
+                "user.attribute": attr,
+                "claim.name": attr,
+                "jsonType.label": json_type,
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+            },
+        }
+        r = requests.post(client_url, headers=headers, json=mapper)
+        if r.status_code == 201:
+            print(f"  OK - Mapper JWT '{name}' creado")
+        else:
+            print(f"  WARN - Mapper JWT '{name}': {r.status_code}")
+
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -593,6 +689,7 @@ if __name__ == "__main__":
     step6_enable_permissions(headers)
     step7_create_policies(headers)
     step8_link_user(headers)
+    step9_create_mappers(headers)
 
     print("\n" + "=" * 70)
     print("  SETUP COMPLETADO")

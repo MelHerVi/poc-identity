@@ -106,6 +106,8 @@ def userinfo():
         if r.status_code == 200:
             data = r.json().get("token", {})
             user = data.get("user", {})
+            project = data.get("project", {})
+            roles = data.get("roles", [])
             return jsonify(
                 {
                     "sub": user.get("id"),
@@ -113,6 +115,10 @@ def userinfo():
                     "email": f"{user.get('name', 'user')}@openstack.local",
                     "name": user.get("name"),
                     "domain": user.get("domain", {}).get("name", "Default"),
+                    "keystone_user_id": user.get("id"),
+                    "keystone_project_id": project.get("id"),
+                    "keystone_project_name": project.get("name"),
+                    "keystone_roles": ",".join(r.get("name", "") for r in roles),
                 }
             )
         else:

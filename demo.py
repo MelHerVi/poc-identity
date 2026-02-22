@@ -138,6 +138,17 @@ if __name__ == "__main__":
     print(f"  Scopes:   {claims.get('scope')}")
     print(f"  Tipo:     {claims.get('typ')}")
     print(f"  AZP:      {claims.get('azp')}")
+    # Claims personalizados de Keystone
+    ks_uid = claims.get("keystone_user_id")
+    ks_pid = claims.get("keystone_project_id")
+    ks_pname = claims.get("keystone_project_name")
+    ks_roles = claims.get("keystone_roles")
+    if ks_uid or ks_pid:
+        print("  --- Claims de Keystone ---")
+        print(f"  KS User ID:     {ks_uid}")
+        print(f"  KS Project ID:  {ks_pid}")
+        print(f"  KS Project:     {ks_pname}")
+        print(f"  KS Roles:       {ks_roles}")
     print("-" * 70)
 
     print("\n[JWT Token]")
