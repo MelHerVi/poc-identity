@@ -14,6 +14,8 @@ import requests
 import json
 import base64
 
+import time
+
 KEYSTONE_URL = "http://localhost:5000/v3"
 KEYCLOAK_URL = "http://localhost:8080"
 REALM = "cloud-orch"
@@ -22,7 +24,7 @@ CLIENT_SECRET = "orchestrator-secret-2026"
 
 
 def step1_get_keystone_token():
-    """Obtener un token real de OpenStack Keystone."""
+    """Obtener un token real de OpenStack Keystone (con reintentos)."""
     auth_data = {
         "auth": {
             "identity": {
@@ -43,9 +45,19 @@ def step1_get_keystone_token():
             },
         }
     }
-    r = requests.post(f"{KEYSTONE_URL}/auth/tokens", json=auth_data)
-    if r.status_code == 201:
-        return r.headers.get("X-Subject-Token")
+    for i in range(10):
+        try:
+            r = requests.post(
+                f"{KEYSTONE_URL}/auth/tokens",
+                json=auth_data,
+                timeout=10,
+            )
+            if r.status_code == 201:
+                return r.headers.get("X-Subject-Token")
+            print(f"  Keystone no listo (Status {r.status_code}), reintentando...")
+        except Exception:
+            print(f"  Keystone no responde (intento {i + 1}/10)...")
+        time.sleep(5)
     return None
 
 

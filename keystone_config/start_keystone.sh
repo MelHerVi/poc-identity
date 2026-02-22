@@ -12,5 +12,18 @@ fi
 # Sync DB
 keystone-manage db_sync
 
+# Bootstrap Keystone (Admin user, Project, Roles, and Endpoints)
+keystone-manage bootstrap --bootstrap-password password \
+  --bootstrap-username admin \
+  --bootstrap-project-name admin \
+  --bootstrap-role-name admin \
+  --bootstrap-service-name keystone \
+  --bootstrap-region-id RegionOne \
+  --bootstrap-admin-url http://localhost:5000/v3 \
+  --bootstrap-public-url http://localhost:5000/v3 \
+  --bootstrap-internal-url http://localhost:5000/v3
+# Fix permissions: db_sync/bootstrap run as root but Apache runs as keystone
+chown -R keystone:keystone /var/lib/keystone
+
 # Run Apache
 exec /usr/sbin/apache2 -DFOREGROUND

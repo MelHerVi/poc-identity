@@ -229,10 +229,11 @@ def step4_create_keycloak_user(headers):
         return None
 
 
-def step5_setup_keystone_user():
-    """Crea el usuario y proyecto en Keystone."""
-    print("\n[5/8] Configurando usuario en Keystone...")
-    # Obtener token de admin de Keystone
+def get_keystone_token():
+    """
+    Obtiene un token de admin de Keystone con reintentos.
+    Espera a que Keystone termine su bootstrap interno.
+    """
     admin_auth = {
         "auth": {
             "identity": {
@@ -245,25 +246,80 @@ def step5_setup_keystone_user():
                     }
                 },
             },
-            "scope": {"project": {"name": "admin", "domain": {"name": "Default"}}},
+            "scope": {
+                "project": {
+                    "name": "admin",
+                    "domain": {"name": "Default"},
+                }
+            },
         }
     }
-    try:
-        r = requests.post(f"{KEYSTONE_URL}/v3/auth/tokens", json=admin_auth)
-        if r.status_code != 201:
-            print(f"  Error autenticando en Keystone: {r.status_code}")
-            return
-        admin_token = r.headers.get("X-Subject-Token")
-        ks_headers = {"X-Auth-Token": admin_token, "Content-Type": "application/json"}
-
-        # Crear proyecto poc-project
-        projects = requests.get(
-            f"{KEYSTONE_URL}/v3/projects?name={KS_PROJECT}", headers=ks_headers
-        ).json()
-        if not projects.get("projects"):
+    for i in range(20):
+        try:
             r = requests.post(
-                f"{KEYSTONE_URL}/v3/projects",
-                headers=ks_headers,
+                f"{KEYSTONE_URL}/v3/auth/tokens",
+                json=admin_auth,
+                timeout=10,
+            )
+            if r.status_code == 201:
+                return r.headers.get("X-Subject-Token")
+            print(f"  Keystone no listo (Status {r.status_code}), reintentando...")
+        except Exception:
+            print(f"  Keystone no responde (intento {i + 1}/20)...")
+        time.sleep(5)
+    return None
+
+
+def ks_request(method, path, token, **kwargs):
+    """
+    Ejecuta una peticion a Keystone con reintentos automaticos.
+    Maneja errores 500 transitorios durante el arranque.
+    """
+    url = f"{KEYSTONE_URL}/v3{path}"
+    headers = {
+        "X-Auth-Token": token,
+        "Content-Type": "application/json",
+    }
+    for attempt in range(12):
+        try:
+            r = requests.request(method, url, headers=headers, timeout=10, **kwargs)
+            if r.status_code >= 500:
+                print(
+                    f"  Keystone error {r.status_code}, reintentando ({attempt + 1}/12)..."
+                )
+                time.sleep(5)
+                continue
+            # Para PUT que no devuelve body (ej: asignar rol)
+            if r.status_code == 204 or not r.text:
+                return {"_status": r.status_code}
+            return r.json()
+        except requests.exceptions.ConnectionError:
+            print(f"  Keystone no accesible, reintentando ({attempt + 1}/12)...")
+            time.sleep(5)
+    raise RuntimeError(f"Keystone no respondio tras 12 intentos en {path}")
+
+
+def step5_setup_keystone_user():
+    """
+    Crea el usuario y proyecto en Keystone.
+    Usa ks_request() para reintentar automaticamente si Keystone
+    devuelve errores 500 transitorios durante el arranque.
+    """
+    print("\n[5/8] Configurando usuario en Keystone...")
+
+    token = get_keystone_token()
+    if not token:
+        print("  Error: Keystone no acepto credenciales admin.")
+        return None
+
+    try:
+        # 1. Proyecto
+        data = ks_request("GET", f"/projects?name={KS_PROJECT}", token)
+        if not data.get("projects"):
+            resp = ks_request(
+                "POST",
+                "/projects",
+                token,
                 json={
                     "project": {
                         "name": KS_PROJECT,
@@ -272,20 +328,19 @@ def step5_setup_keystone_user():
                     }
                 },
             )
-            project_id = r.json()["project"]["id"]
+            project_id = resp["project"]["id"]
             print(f"  OK - Proyecto '{KS_PROJECT}' creado")
         else:
-            project_id = projects["projects"][0]["id"]
+            project_id = data["projects"][0]["id"]
             print(f"  Proyecto '{KS_PROJECT}' ya existe")
 
-        # Crear usuario poc-user
-        users = requests.get(
-            f"{KEYSTONE_URL}/v3/users?name={KS_USER}", headers=ks_headers
-        ).json()
-        if not users.get("users"):
-            r = requests.post(
-                f"{KEYSTONE_URL}/v3/users",
-                headers=ks_headers,
+        # 2. Usuario
+        data = ks_request("GET", f"/users?name={KS_USER}", token)
+        if not data.get("users"):
+            resp = ks_request(
+                "POST",
+                "/users",
+                token,
                 json={
                     "user": {
                         "name": KS_USER,
@@ -295,27 +350,26 @@ def step5_setup_keystone_user():
                     }
                 },
             )
-            user_id = r.json()["user"]["id"]
+            user_id = resp["user"]["id"]
             print(f"  OK - Usuario '{KS_USER}' creado")
         else:
-            user_id = users["users"][0]["id"]
+            user_id = data["users"][0]["id"]
             print(f"  Usuario '{KS_USER}' ya existe")
 
-        # Asignar rol member al usuario en el proyecto
-        roles = requests.get(
-            f"{KEYSTONE_URL}/v3/roles?name=member", headers=ks_headers
-        ).json()
-        if roles.get("roles"):
-            role_id = roles["roles"][0]["id"]
-            requests.put(
-                f"{KEYSTONE_URL}/v3/projects/{project_id}/users/{user_id}/roles/{role_id}",
-                headers=ks_headers,
+        # 3. Rol member
+        data = ks_request("GET", "/roles?name=member", token)
+        if data.get("roles"):
+            role_id = data["roles"][0]["id"]
+            ks_request(
+                "PUT",
+                f"/projects/{project_id}/users/{user_id}/roles/{role_id}",
+                token,
             )
-            print(f"  OK - Rol 'member' asignado")
+            print("  OK - Rol 'member' asignado")
 
         return user_id
     except Exception as e:
-        print(f"  Error: {e}")
+        print(f"  Error en Step 5: {e}")
         return None
 
 
@@ -485,33 +539,21 @@ def step8_link_user(headers):
         f"{KEYCLOAK_URL}/admin/realms/{REALM}/users/{user_id}/federated-identity",
         headers=headers,
     ).json()
-    if any(l.get("identityProvider") == IDP_ALIAS for l in links):
+    if any(link.get("identityProvider") == IDP_ALIAS for link in links):
         print("  Ya vinculado")
         return
 
-    # Obtener el ID del usuario en Keystone
-    admin_auth = {
-        "auth": {
-            "identity": {
-                "methods": ["password"],
-                "password": {
-                    "user": {
-                        "name": "admin",
-                        "domain": {"name": "Default"},
-                        "password": "password",
-                    }
-                },
-            },
-            "scope": {"project": {"name": "admin", "domain": {"name": "Default"}}},
-        }
-    }
-    r = requests.post(f"{KEYSTONE_URL}/v3/auth/tokens", json=admin_auth)
-    admin_token = r.headers.get("X-Subject-Token")
-    ks_headers = {"X-Auth-Token": admin_token}
+    # Obtener el ID del usuario en Keystone (con reintentos)
+    ks_token = get_keystone_token()
+    if not ks_token:
+        print("  Error: No se pudo autenticar en Keystone")
+        return
 
-    ks_users = requests.get(
-        f"{KEYSTONE_URL}/v3/users?name={KS_USER}", headers=ks_headers
-    ).json()
+    ks_users = ks_request("GET", f"/users?name={KS_USER}", ks_token)
+    if not ks_users.get("users"):
+        print(f"  Error: No se encontro el usuario {KS_USER} en Keystone")
+        return
+
     ks_user_id = ks_users["users"][0]["id"]
 
     # Crear el link federado
