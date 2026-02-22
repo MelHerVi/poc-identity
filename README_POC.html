@@ -8,7 +8,7 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a0e1a; color: #e0e0e0; line-height: 1.6; }
         .container { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
-        h1 { font-size: 2.2em; background: linear-gradient(135deg, #00d2ff, #3a7bd5); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px; }
+        h1 { font-size: 2.2em; background: linear-gradient(135deg, #00d2ff, #3a7bd5); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 10px; }
         h2 { color: #00d2ff; border-bottom: 2px solid #1a2540; padding-bottom: 8px; margin: 30px 0 15px; }
         h3 { color: #7ec8e3; margin: 20px 0 10px; }
         .badge { display: inline-block; background: linear-gradient(135deg, #00c853, #00e676); color: #0a0e1a; padding: 4px 12px; border-radius: 12px; font-size: 0.85em; font-weight: bold; margin-left: 10px; }
@@ -64,13 +64,23 @@
             </pre>
         </div>
 
-        <h3>Componentes</h3>
+        <h3>Componentes y Roles Arquitect&oacute;nicos</h3>
         <table>
-            <tr><th>Componente</th><th>Tecnolog&iacute;a</th><th>Funci&oacute;n</th></tr>
-            <tr><td><code>Keystone</code></td><td>OpenStack Identity</td><td>Emite tokens Fernet, fuente de identidad</td></tr>
-            <tr><td><code>Keystone Adapter</code></td><td>Python/Flask</td><td>Traduce tokens Keystone a formato OIDC (RFC 7662)</td></tr>
-            <tr><td><code>Keycloak</code></td><td>v26.5 (Quarkus)</td><td>Identity Broker, emite JWT firmados con RSA-256</td></tr>
+            <tr><th>Componente</th><th>Rol T&eacute;cnico</th><th>Funci&oacute;n</th></tr>
+            <tr><td><code>Keystone</code></td><td><strong>Identity Source</strong></td><td>Fuente de verdad, emite tokens Fernet (opacos)</td></tr>
+            <tr><td><code>Keystone Adapter</code></td><td><strong>Protocol Bridge / Side-Car IdP</strong></td><td>Traduce OpenStack API a OIDC (RFC 7662)</td></tr>
+            <tr><td><code>Keycloak</code></td><td><strong>Identity Broker</strong></td><td>Intermediario que re-emite identidad como JWT</td></tr>
         </table>
+
+        <h3>Glosario de Arquitectura de Identidad</h3>
+        <div class="card" style="background: #0f172a; border-left: 4px solid #3a7bd5;">
+            <ul style="list-style-type: none;">
+                <li style="margin-bottom: 12px;"><strong>&bull; Identity Brokerage (Intermediaci&oacute;n):</strong> Keycloak actúa como un broker que valida credenciales externas y las transforma en un formato est&aacute;ndar.</li>
+                <li style="margin-bottom: 12px;"><strong>&bull; Protocol Translation (Traducci&oacute;n):</strong> El Adapter es un puente para que sistemas propietarios hablen lenguajes industriales (OIDC).</li>
+                <li style="margin-bottom: 12px;"><strong>&bull; Token Introspection (RFC 7662):</strong> Mecanismo estandarizado para consultar el estado interno de un token opaco.</li>
+                <li><strong>&bull; Side-Car Identity Provider:</strong> Patr&oacute;n arquitect&oacute;nico donde se añade identidad moderna a un sistema existente sin modificarlo.</li>
+            </ul>
+        </div>
 
         <h3>Por qu&eacute; se necesita el Adapter</h3>
         <div class="card">
@@ -247,7 +257,7 @@ Permissions: Enabled (fine-grained)</pre>
             <div class="step"><div class="step-num" style="background: linear-gradient(135deg, #00c853, #00e676);">&#10004;</div><div><strong>Revocaci&oacute;n centralizada</strong> &mdash; se revoca la sesi&oacute;n en Keycloak y el token expira naturalmente</div></div>
         </div>
 
-        <h2>Instalaci&oacute;n R&aacute;pida (3 comandos)</h2>
+        <h2>Instalaci&oacute;n R&aacute;pida</h2>
         <div class="card">
             <h3>Prerequisitos</h3>
             <p>Docker, Docker Compose, Python 3.x con <code>requests</code> (<code>pip install requests</code>)</p>
@@ -257,11 +267,15 @@ Permissions: Enabled (fine-grained)</pre>
 # 1. Levantar los servicios (Keystone, Keycloak, Adapter)
 docker-compose up -d
 
-# 2. Esperar ~30s y ejecutar el setup automatico (una sola vez)
+# 2. Esperar a que Keycloak muestre "Listening on" en los logs (~30-60s)
+#    Verificar con: docker logs poc-identity-keycloak-1 --tail 5
+
+# 3. Ejecutar el setup automatico (una sola vez)
 python setup.py
 
-# 3. Ejecutar la demo del flujo completo
+# 4. Ejecutar la demo del flujo completo
 python demo.py</pre>
+            <p style="margin-top: 12px; color: #ff9800;"><strong>Importante:</strong> No ejecutes <code>setup.py</code> hasta que Keycloak haya terminado de arrancar.</p>
         </div>
 
         <h3>Que hace <code>setup.py</code></h3>
@@ -292,7 +306,10 @@ docker-compose restart keycloak
 docker-compose down
 
 # Parar y borrar datos (empezar de cero)
-docker-compose down -v</pre>
+docker-compose down -v
+
+# Limpieza completa (contenedores, volumenes y datos locales)
+python cleanup.py</pre>
         </div>
 
         <div class="card warning">
@@ -331,10 +348,15 @@ poc-identity/
 ├── docker-compose.yml   # Orquestaci&oacute;n de contenedores
 ├── setup.py             # Configuraci&oacute;n autom&aacute;tica
 ├── demo.py              # Prueba de concepto completa
+├── cleanup.py           # Limpieza completa del entorno
 ├── README_POC.md        # Gu&iacute;a t&eacute;cnica
 ├── README_POC.html      # Reporte visual (este archivo)
-└── app/
-    └── keystone_adapter.py # Traductor de protocolos</pre>
+├── app/
+│   └── keystone_adapter.py # Traductor de protocolos
+└── keystone_config/
+    ├── keystone.conf     # Configuraci&oacute;n de OpenStack
+    ├── config.json       # Metadatos para Kolla
+    └── start_keystone.sh # Script de arranque</pre>
         </div>
 
         <p style="text-align: center; color: #4a5568; margin-top: 40px; font-size: 0.9em;">

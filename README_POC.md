@@ -26,13 +26,20 @@ por un JWT firmado por Keycloak usando el estandar **RFC 8693 (Token Exchange)**
        |                         |   5. JWT Firmado ------>|
 ```
 
-### Componentes
+### Componentes y Roles Arquitectonicos
 
-| Componente           | Tecnologia         | Funcion                                           |
-| -------------------- | ------------------ | ------------------------------------------------- |
-| **Keystone**         | OpenStack Identity | Emite tokens Fernet, fuente de identidad          |
-| **Keystone Adapter** | Python/Flask       | Traduce tokens Keystone a formato OIDC (RFC 7662) |
-| **Keycloak**         | v26.5 (Quarkus)    | Identity Broker, emite JWT firmados               |
+| Componente           | Rol Tecnico                        | Funcion                                        |
+| -------------------- | ---------------------------------- | ---------------------------------------------- |
+| **Keystone**         | **Identity Source**                | Fuente de verdad, emite tokens Fernet (opacos) |
+| **Keystone Adapter** | **Protocol Bridge / Side-Car IdP** | Traduce OpenStack API a OIDC (RFC 7662)        |
+| **Keycloak**         | **Identity Broker**                | Intermediario que re-emite identidad como JWT  |
+
+### Conceptos Clave
+
+1.  **Identity Brokerage (Intermediacion):** Keycloak no es el dueño de la identidad; actúa como un broker que valida credenciales externas (Keystone) y las transforma en un formato estandarizado (JWT) para el resto de la empresa.
+2.  **Protocol Translation (Traduccion):** El Adapter actúa como un puente, permitiendo que un sistema "legacy" o propietario hable el lenguaje de la industria (OIDC/OAuth2).
+3.  **Token Introspection (RFC 7662):** Es el mecanismo estandarizado donde Keycloak "mira hacia adentro" del token opaco de Keystone consultando al Adapter.
+4.  **Side-Car Identity Provider:** Patron arquitectonico donde se añade un microservicio (Adapter) junto a un sistema existente para dotarlo de capacidades de identidad modernas sin modificar su codigo original.
 
 ### Por que se necesita el Adapter (introspection)
 
@@ -73,8 +80,8 @@ GET /userinfo       ──►     GET /v3/auth/tokens
     email: "..." }              domain: "Default" } } }
 ```
 
-> **Nota**: Si Keystone fuera un proveedor OIDC nativo (como Azure AD, Google u Okta),
-> no se necesitaria el adapter — Keycloak conectaria directamente.
+> **Nota Arquitectonica**: Estamos implementando un **Virtual IdP**. Para Keycloak, el
+> Adapter _es_ el servidor de identidad oficial, abstrayendo la complejidad de OpenStack.
 
 ### Estandares utilizados
 
@@ -160,12 +167,18 @@ El archivo `inspect.py` colisionaba con el modulo estandar `inspect` de Python.
 # 1. Levantar los servicios (Keystone, Keycloak, Adapter)
 docker-compose up -d
 
-# 2. Esperar ~30s y ejecutar el setup automatico (una sola vez)
+# 2. Esperar a que Keycloak muestre "Listening on" en los logs (~30-60s)
+#    Verificar con: docker logs poc-identity-keycloak-1 --tail 5
+
+# 3. Ejecutar el setup automatico (una sola vez)
 python setup.py
 
-# 3. Ejecutar la demo del flujo completo
+# 4. Ejecutar la demo del flujo completo
 python demo.py
 ```
+
+> **Importante**: No ejecutes `setup.py` hasta que Keycloak haya terminado
+> de arrancar. Puedes verificarlo buscando `Listening on` en los logs.
 
 ### Que hace `setup.py`
 
@@ -202,6 +215,9 @@ docker-compose down
 
 # Parar y borrar datos (empezar de cero)
 docker-compose down -v
+
+# Limpieza completa (contenedores, volumenes y datos locales)
+python cleanup.py
 ```
 
 ## Resultado del Demo
@@ -302,6 +318,7 @@ poc-identity/
   docker-compose.yml        # Orquestacion: Keystone, Keycloak, Adapter
   setup.py                  # CONFIGURACION AUTOMATICA (Ejecutar primero)
   demo.py                   # Prueba de concepto del flujo completo
+  cleanup.py                # LIMPIEZA COMPLETA (borrar todo)
   README_POC.md             # Guia tecnica (este archivo)
   README_POC.html           # Reporte visual premium
   .gitignore                # Exclusion de datos temporales
