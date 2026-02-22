@@ -25,14 +25,10 @@ git clone <url-del-repo> && cd poc-identity
 # 2. Levantar los servicios
 docker-compose up -d
 
-# 3. Esperar a que Keycloak arranque (~30-60s)
-#    Verificar con: docker logs poc-identity-keycloak-1 --tail 5
-#    Buscar la línea: "Listening on: http://0.0.0.0:8080"
-
-# 4. Ejecutar el setup automático (una sola vez)
+# 3. Ejecutar el setup automático (espera a los servicios y configura todo)
 python setup.py
 
-# 5. Ejecutar la demo
+# 4. Ejecutar la demo
 python demo.py
 ```
 
